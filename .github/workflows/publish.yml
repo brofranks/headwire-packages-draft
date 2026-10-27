@@ -1,0 +1,64 @@
+name: Verify and publish package repositories
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install repository tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y apt-utils createrepo-c rpm gnupg python3-venv
+      - name: Check source and signed repository fixtures
+        run: bash scripts/check.sh
+
+  publish:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    needs: check
+    runs-on: ubuntu-24.04
+    environment: repository
+    concurrency:
+      group: package-repositories
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+      attestations: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install repository tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y apt-utils createrepo-c rpm gnupg
+      - name: Build verified, signed package repositories
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY_PRIVATE_KEY: ${{ secrets.REPOSITORY_PRIVATE_KEY }}
+          REPOSITORY_PASSPHRASE: ${{ secrets.REPOSITORY_PASSPHRASE }}
+        run: |
+          export GNUPGHOME
+          GNUPGHOME=$(mktemp -d)
+          chmod 0700 "$GNUPGHOME"
+          trap 'gpgconf --kill gpg-agent; rm -rf "$GNUPGHOME"' EXIT
+          printf '%s\n' "$REPOSITORY_PRIVATE_KEY" | gpg --batch --import
+          python3 scripts/build.py
+      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
+        with:
+          path: site
+      - name: Publish complete repository snapshot
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
